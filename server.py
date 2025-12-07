@@ -1,6 +1,7 @@
 import sqlite3
 import threading
 from flask import Flask, jsonify, request
+from datetime import datetime
 
 DB_FILE = 'records.db'
 
@@ -11,6 +12,7 @@ SCHEMA = [
         name TEXT NOT NULL UNIQUE,
         country TEXT
     );
+    CREATE INDEX IF NOT EXISTS idx_artists_name ON Artists(name);
     """,
     """
     CREATE TABLE IF NOT EXISTS Genres (
@@ -30,6 +32,10 @@ SCHEMA = [
         FOREIGN KEY (artist_id) REFERENCES Artists(artist_id),
         FOREIGN KEY (genre_id) REFERENCES Genres(genre_id)
     );
+    CREATE INDEX IF NOT EXISTS idx_records_artist ON Records(artist_id);
+    CREATE INDEX IF NOT EXISTS idx_records_genre ON Records(genre_id);
+    CREATE INDEX IF NOT EXISTS idx_records_purchase_date ON Records(purchase_date);
+    CREATE INDEX IF NOT EXISTS idx_records_year ON Records(year);
     
     CREATE TABLE IF NOT EXISTS Stores (
         store_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,14 +43,7 @@ SCHEMA = [
         state TEXT,
         address TEXT
     );
-
-    CREATE TABLE IF NOT EXISTS recordStores (
-        record_id INTEGER,
-        store_id INTEGER,
-        PRIMARY KEY (record_id, store_id),
-        FOREIGN KEY (record_id) REFERENCES Records(record_id),
-        FOREIGN KEY (store_id) REFERENCES Stores(store_id)
-    );
+    CREATE INDEX IF NOT EXISTS idx_stores_name ON Stores(name);
     """
 ]
 
@@ -148,6 +147,15 @@ def find_or_create_store(name: str, state: str = None, address: str = None) -> i
 
 '''ADD RECORD TO DB'''
 def add_record_db(data: dict) -> int:
+    # defensive validation at DB layer
+    if data.get('title') is None:
+        raise ValueError('title required')
+    y = data.get('year')
+    p = data.get('price')
+    if y is None or not isinstance(y, int) or y < 1800 or y > 2100:
+        raise ValueError('year must be a valid number between 1800 and 2100')
+    if p is None or not isinstance(p, (int, float)) or float(p) < 0:
+        raise ValueError('price must be a valid non-negative number')
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -166,6 +174,15 @@ def add_record_db(data: dict) -> int:
 
 
 def update_record_db(record_id: int, data: dict) -> None:
+    # defensive validation at DB layer
+    if data.get('title') is None:
+        raise ValueError('title required')
+    y = data.get('year')
+    p = data.get('price')
+    if y is None or not isinstance(y, int) or y < 1800 or y > 2100:
+        raise ValueError('year must be a valid number between 1800 and 2100')
+    if p is None or not isinstance(p, (int, float)) or float(p) < 0:
+        raise ValueError('price must be a valid non-negative number')
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -289,6 +306,51 @@ def fetch_all_records_db():
 app = Flask(__name__)
 
 
+def parse_int(val, min_val=None, max_val=None):
+    if val is None:
+        return None
+    try:
+        i = int(val)
+        if min_val is not None and i < min_val:
+            return None
+        if max_val is not None and i > max_val:
+            return None
+        return i
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_float(val, min_val=None, max_val=None):
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        if min_val is not None and f < min_val:
+            return None
+        if max_val is not None and f > max_val:
+            return None
+        return f
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_date_yyyy_mm_dd(val):
+    if not val:
+        return None
+    try:
+        datetime.strptime(val, "%Y-%m-%d")
+        return val
+    except ValueError:
+        return None
+
+
+def sanitize_text(val, max_len=255):
+    s = (val or "").strip()
+    if not s:
+        return None
+    return s[:max_len]
+
+
 @app.route('/api/records', methods=['GET'])
 def api_get_records():
     rows = fetch_all_records_db()
@@ -299,20 +361,32 @@ def api_get_records():
 
 @app.route('/api/records', methods=['POST'])
 def api_add_record():
-    payload = request.get_json(force=True)
-    artist_name = payload.get('artist_name', '').strip()
-    genre_name = payload.get('genre', '').strip() if 'genre' in payload else ''
+    payload = request.get_json(silent=True) or {}
+    title = sanitize_text(payload.get('title'))
+    if not title:
+        return jsonify({'error': 'title required'}), 400
+    artist_name = sanitize_text(payload.get('artist_name'))
+    genre_name = sanitize_text(payload.get('genre'))
     artist_id = find_or_create_artist(artist_name) if artist_name else None
     genre_id = find_or_create_genre(genre_name) if genre_name else None
+    year = parse_int(payload.get('year'), min_val=1800, max_val=2100)
+    if year is None:
+        return jsonify({'error': 'year must be a valid number between 1800 and 2100'}), 400
+    condition = sanitize_text(payload.get('condition'))
+    price = parse_float(payload.get('price'), min_val=0)
+    if price is None:
+        return jsonify({'error': 'price must be a valid non-negative number'}), 400
+    purchase_date = parse_date_yyyy_mm_dd(payload.get('purchase_date'))
+    store_id = parse_int(payload.get('store_id'), min_val=1)
     data = {
-        'title': payload.get('title'),
+        'title': title,
         'artist_id': artist_id,
         'genre_id': genre_id,
-        'year': payload.get('year'),
-        'condition': payload.get('condition'),
-        'price': payload.get('price'),
-        'purchase_date': payload.get('purchase_date'),
-        'store_id': payload.get('store_id')
+        'year': year,
+        'condition': condition,
+        'price': price,
+        'purchase_date': purchase_date,
+        'store_id': store_id
     }
     rid = add_record_db(data)
     return jsonify({'record_id': rid}), 201
@@ -320,20 +394,32 @@ def api_add_record():
 
 @app.route('/api/records/<int:rid>', methods=['PUT'])
 def api_update_record(rid):
-    payload = request.get_json(force=True)
-    artist_name = payload.get('artist_name', '').strip()
-    genre_name = payload.get('genre', '').strip() if 'genre' in payload else ''
+    payload = request.get_json(silent=True) or {}
+    title = sanitize_text(payload.get('title'))
+    if not title:
+        return jsonify({'error': 'title required'}), 400
+    artist_name = sanitize_text(payload.get('artist_name'))
+    genre_name = sanitize_text(payload.get('genre'))
     artist_id = find_or_create_artist(artist_name) if artist_name else None
     genre_id = find_or_create_genre(genre_name) if genre_name else None
+    year = parse_int(payload.get('year'), min_val=1800, max_val=2100)
+    if year is None:
+        return jsonify({'error': 'year must be a valid number between 1800 and 2100'}), 400
+    condition = sanitize_text(payload.get('condition'))
+    price = parse_float(payload.get('price'), min_val=0)
+    if price is None:
+        return jsonify({'error': 'price must be a valid non-negative number'}), 400
+    purchase_date = parse_date_yyyy_mm_dd(payload.get('purchase_date'))
+    store_id = parse_int(payload.get('store_id'), min_val=1)
     data = {
-        'title': payload.get('title'),
+        'title': title,
         'artist_id': artist_id,
         'genre_id': genre_id,
-        'year': payload.get('year'),
-        'condition': payload.get('condition'),
-        'price': payload.get('price'),
-        'purchase_date': payload.get('purchase_date'),
-        'store_id': payload.get('store_id')
+        'year': year,
+        'condition': condition,
+        'price': price,
+        'purchase_date': purchase_date,
+        'store_id': store_id
     }
     update_record_db(rid, data)
     return ('', 204)
@@ -355,9 +441,9 @@ def api_get_artists():
 
 @app.route('/api/artists', methods=['POST'])
 def api_create_artist():
-    payload = request.get_json(force=True)
-    name = (payload.get('name') or '').strip()
-    country = payload.get('country')
+    payload = request.get_json(silent=True) or {}
+    name = sanitize_text(payload.get('name'))
+    country = sanitize_text(payload.get('country'))
     if not name:
         return jsonify({'error': 'name required'}), 400
     aid = find_or_create_artist(name, country=country)
@@ -366,9 +452,9 @@ def api_create_artist():
 
 @app.route('/api/artists/<int:aid>', methods=['PUT'])
 def api_update_artist(aid):
-    payload = request.get_json(force=True)
-    name = (payload.get('name') or '').strip()
-    country = payload.get('country')
+    payload = request.get_json(silent=True) or {}
+    name = sanitize_text(payload.get('name'))
+    country = sanitize_text(payload.get('country'))
     if not name:
         return jsonify({'error': 'name required'}), 400
     conn = get_conn()
@@ -404,8 +490,8 @@ def api_get_genres():
 
 @app.route('/api/genres', methods=['POST'])
 def api_create_genre():
-    payload = request.get_json(force=True)
-    name = payload.get('name', '').strip()
+    payload = request.get_json(silent=True) or {}
+    name = sanitize_text(payload.get('name'))
     if not name:
         return jsonify({'error': 'name required'}), 400
     gid = find_or_create_genre(name)
@@ -414,8 +500,8 @@ def api_create_genre():
 
 @app.route('/api/genres/<int:gid>', methods=['PUT'])
 def api_update_genre(gid):
-    payload = request.get_json(force=True)
-    name = (payload.get('name') or '').strip()
+    payload = request.get_json(silent=True) or {}
+    name = sanitize_text(payload.get('name'))
     if not name:
         return jsonify({'error': 'name required'}), 400
     conn = get_conn()
@@ -451,22 +537,22 @@ def api_get_stores():
 
 @app.route('/api/stores', methods=['POST'])
 def api_create_store():
-    payload = request.get_json(force=True)
-    name = (payload.get('name') or '').strip()
+    payload = request.get_json(silent=True) or {}
+    name = sanitize_text(payload.get('name'))
     if not name:
         return jsonify({'error': 'name required'}), 400
-    state = payload.get('state')
-    address = payload.get('address')
+    state = sanitize_text(payload.get('state'))
+    address = sanitize_text(payload.get('address'))
     sid = find_or_create_store(name, state=state, address=address)
     return jsonify({'store_id': sid}), 201
 
 
 @app.route('/api/stores/<int:sid>', methods=['PUT'])
 def api_update_store(sid):
-    payload = request.get_json(force=True)
-    name = (payload.get('name') or '').strip()
-    state = payload.get('state')
-    address = payload.get('address')
+    payload = request.get_json(silent=True) or {}
+    name = sanitize_text(payload.get('name'))
+    state = sanitize_text(payload.get('state'))
+    address = sanitize_text(payload.get('address'))
     if not name:
         return jsonify({'error': 'name required'}), 400
     conn = get_conn()
@@ -494,12 +580,12 @@ def api_report_records():
     """Return matching records and simple statistics given filters.
     JSON body may contain: start_date, end_date (YYYY-MM-DD), artist_id, store_id, genre_id
     """
-    payload = request.get_json(force=True) or {}
-    start_date = payload.get('start_date')
-    end_date = payload.get('end_date')
-    artist_id = payload.get('artist_id')
-    store_id = payload.get('store_id')
-    genre_id = payload.get('genre_id')
+    payload = request.get_json(silent=True) or {}
+    start_date = parse_date_yyyy_mm_dd(payload.get('start_date'))
+    end_date = parse_date_yyyy_mm_dd(payload.get('end_date'))
+    artist_id = parse_int(payload.get('artist_id'), min_val=1)
+    store_id = parse_int(payload.get('store_id'), min_val=1)
+    genre_id = parse_int(payload.get('genre_id'), min_val=1)
     # Build WHERE clauses (only date, artist, genre supported)
     where = []
     params = []

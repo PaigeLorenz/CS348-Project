@@ -296,13 +296,26 @@ class RecordsApp(tk.Tk):
                 stores = api_get_stores()
                 s = next((x for x in stores if x['name'] == store_name), None)
                 store_id = s['store_id'] if s else None
+            # Convert year/price to numeric types for API payload
+            year_val = None
+            if data.get('year'):
+                try:
+                    year_val = int(data.get('year'))
+                except ValueError:
+                    year_val = None
+            price_val = None
+            if data.get('price'):
+                try:
+                    price_val = float(data.get('price'))
+                except ValueError:
+                    price_val = None
             payload = {
                 'title': data.get('title'),
                 'artist_name': data.get('artist_name'),
                 'genre': data.get('genre'),
-                'year': data.get('year'),
+                'year': year_val,
                 'condition': data.get('condition'),
-                'price': data.get('price'),
+                'price': price_val,
                 'purchase_date': data.get('purchase_date'),
                 'store_id': store_id
             }
@@ -311,7 +324,12 @@ class RecordsApp(tk.Tk):
                 messagebox.showinfo('Added', 'Record added successfully.')
                 self.load_records()
             except Exception as e:
-                messagebox.showerror('Error', f'Failed to add record: {e}')
+                # Show server-provided error if available
+                try:
+                    msg = str(e)
+                    messagebox.showerror('Error', f'Failed to add record: {msg}')
+                except Exception:
+                    messagebox.showerror('Error', 'Failed to add record.')
 
     def on_edit(self):
         rid = self.get_selected_record()
@@ -343,13 +361,26 @@ class RecordsApp(tk.Tk):
                 stores = api_get_stores()
                 s = next((x for x in stores if x['name'] == store_name), None)
                 store_id = s['store_id'] if s else None
+            # Convert year/price to numeric types for API payload
+            year_val = None
+            if data.get('year'):
+                try:
+                    year_val = int(data.get('year'))
+                except ValueError:
+                    year_val = None
+            price_val = None
+            if data.get('price'):
+                try:
+                    price_val = float(data.get('price'))
+                except ValueError:
+                    price_val = None
             payload = {
                 'title': data.get('title'),
                 'artist_name': data.get('artist_name'),
                 'genre': data.get('genre'),
-                'year': data.get('year'),
+                'year': year_val,
                 'condition': data.get('condition'),
-                'price': data.get('price'),
+                'price': price_val,
                 'purchase_date': data.get('purchase_date'),
                 'store_id': store_id
             }
@@ -358,7 +389,11 @@ class RecordsApp(tk.Tk):
                 messagebox.showinfo('Updated', 'Record updated successfully.')
                 self.load_records()
             except Exception as e:
-                messagebox.showerror('Error', f'Failed to update record: {e}')
+                try:
+                    msg = str(e)
+                    messagebox.showerror('Error', f'Failed to update record: {msg}')
+                except Exception:
+                    messagebox.showerror('Error', 'Failed to update record.')
 
     def on_delete(self):
         rid = self.get_selected_record()
@@ -697,6 +732,28 @@ class RecordDialog(tk.Toplevel):
         if not title:
             messagebox.showerror('Validation', 'Title is required')
             return
+        # Validate year: numeric and plausible range
+        year_str = self.year_var.get().strip()
+        if year_str:
+            try:
+                year_val = int(year_str)
+                if year_val < 1800 or year_val > 2100:
+                    messagebox.showerror('Validation', 'Year must be between 1800 and 2100')
+                    return
+            except ValueError:
+                messagebox.showerror('Validation', 'Year must be a numeric value')
+                return
+        # Validate price: numeric and non-negative
+        price_str = self.price_var.get().strip()
+        if price_str:
+            try:
+                price_val = float(price_str)
+                if price_val < 0:
+                    messagebox.showerror('Validation', 'Price must be a non-negative number')
+                    return
+            except ValueError:
+                messagebox.showerror('Validation', 'Price must be a numeric value')
+                return
         # optional basic date validation
         pdate = self.pdate_var.get().strip()
         if pdate:
@@ -710,9 +767,9 @@ class RecordDialog(tk.Toplevel):
             'artist_name': self.artist_var.get().strip(),
             'genre': self.genre_var.get().strip(),
             'store_name': self.store_var.get().strip(),
-            'year': self.year_var.get().strip(),
+            'year': year_str,
             'condition': self.cond_var.get().strip(),
-            'price': self.price_var.get().strip(),
+            'price': price_str,
             'purchase_date': pdate
         }
         self.destroy()
